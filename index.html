@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Invader Hell - Complete Edition</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { 
+  margin: 0; 
+  background: black; 
+  overflow: hidden; 
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  font-family: sans-serif;
+}
+#gameContainer {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  background: black;
+  position: relative;
+}
+canvas { 
+  display: block;
+  background: #000;
+  max-width: 100%;
+  max-height: 100%;
+  image-rendering: crisp-edges;
+}
+#startBtn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin-top: 80px;
+  padding: 20px 60px;
+  font-size: 28px;
+  font-weight: bold;
+  color: white;
+  background: linear-gradient(45deg, #ff00ff, #00ffff);
+  border: 3px solid white;
+  border-radius: 10px;
+  cursor: pointer;
+  z-index: 10;
+  touch-action: manipulation;
+}
+#startBtn:active {
+  transform: translate(-50%, -50%) scale(0.95);
+}
+
+/* Mobile Fire Button */
+#fireBtn {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  background: rgba(255, 0, 0, 0.3);
+  border: 4px solid rgba(255, 0, 0, 0.7);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: bold;
+  color: white;
+  z-index: 5;
+  touch-action: none;
+  user-select: none;
+  text-align: center;
+}
+#fireBtn.active {
+  display: flex;
+}
+#fireBtn:active {
+  background: rgba(255, 0, 0, 0.6);
+}
+#fireBtn.charging {
+  background: rgba(255, 255, 0, 0.5);
+  border-color: yellow;
+  box-shadow: 0 0 20px yellow;
+}
+
+/* Touch zones (invisible) */
+#leftZone, #rightZone {
+  position: absolute;
+  top: 0;
+  width: 50%;
+  height: 100%;
+  z-index: 1;
+  pointer-events: auto;
+}
+#leftZone {
+  left: 0;
+  background: rgba(0, 100, 255, 0.05);
+}
+#rightZone {
+  right: 0;
+  background: rgba(255, 100, 0, 0.05);
+}
+.zone-hidden {
+  background: transparent !important;
+}
+</style>
+</head>
+<body>
+<div id="gameContainer">
+  <canvas id="game"></canvas>
+  <div id="leftZone" class="zone-hidden"></div>
+  <div id="rightZone" class="zone-hidden"></div>
+  <div id="fireBtn">FIRE<br>SHOT</div>
+</div>
+<button id="startBtn">GAME START</button>
+<script>
+const gameContainer = document.getElementById("gameContainer");
+const c = document.getElementById("game");
+const ctx = c.getContext("2d");
+const startBtn = document.getElementById("startBtn");
+const fireBtn = document.getElementById("fireBtn");
+const leftZone = document.getElementById("leftZone");
+const rightZone = document.getElementById("rightZone");
+
+// Detect mobile
+const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) || 
+                 ('ontouchstart' in window) || window.innerWidth <= 768;
+
+// Canvas setup
+function resizeCanvas() {
+  const aspect = 480 / 640;
+  const windowAspect = window.innerWidth / window.innerHeight;
+  
+  if (windowAspect > aspect) {
+    c.height = window.innerHeight;
+    c.width = c.height * aspect;
+  } else {
+    c.width = window.innerWidth;
+    c.height = c.width / aspect;
+  }
+  
+  const scale = c.width / 480;
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+}
+
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+// Game State
+let gameState = "title"; 
+let countdownValue = 3;
+let countdownFrame = 0;
+let score = 0;
+let life = 10;
+const MAX_LIFE = 30;
+
+// Flow Control
+let stageTimer = 0;
+const BOSS_SPAWN_TIME = 1200;
+
+// Player
+let player = { x: 220, y: 600, w: 40, h: 20, speed: 6, tilt: 0, left: false, right: false, alive: true };
+let bullets = [];
+let chargeStart = 0;
+let charging = false;
+let lastShot = 0;
+let chargeCooldown = 0;
+const maxChargeCooldown = 3000;
+const chargeThreshold = 1.0;
+let autoFire = { active: false, endTime: 0, lastShot: 0, interval: 100 };
+
+// Enemies
+let enemies = [];
+let enemyBullets = [];
+let miniBosses = [];
+let boss = null;
+let bossHP = 50;
+let bossLaser = null;
+
+// Items/Effects
+let hearts = [];
+let stars = [];
+let explosions = [];
+let floatingTexts = [];
+let healParticles = [];
+let screenShake = 0;
+let gameOver = false;
+let gameClear = false;
+
+const HEART_PROB = 0.08;
+const STAR_PROB = 0.04;
+
+// Mobile Controls Setup
+if (isMobile) {
+  fireBtn.classList.add('active');
+  
+  // Left zone
+  leftZone.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (gameState === "playing") player.left = true;
+  });
+  leftZone.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    player.left = false;
+  });
+  
+  // Right zone
+  rightZone.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (gameState === "playing") player.right = true;
+  });
+  rightZone.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    player.right = false;
+  });
+  
+  // Fire button
+  fireBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (gameState === "playing") {
+      chargeStart = Date.now();
+      charging = true;
+      fireBtn.classList.add('charging');
+    }
+  });
+  
+  fireBtn.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    if (gameState === "playing" && charging) {
+      fireShot();
+      charging = false;
+      fireBtn.classList.remove('charging');
+    }
+  });
+} else {
+  // Hide mobile controls on PC
+  leftZone.style.display = 'none';
+  rightZone.style.display = 'none';
+}
+
+// Keyboard Controls (PC)
+document.addEventListener("keydown", e => {
+  if (gameState !== "playing") return;
+  
+  if (e.key === "ArrowLeft") player.left = true;
+  if (e.key === "ArrowRight") player.right = true;
+  if (e.key === " " && !charging) { 
+    e.preventDefault();
+    chargeStart = Date.now(); 
+    charging = true; 
+  }
+});
+
+document.addEventListener("keyup", e => {
+  if (e.key === "ArrowLeft") player.left = false;
+  if (e.key === "ArrowRight") player.right = false;
+  if (e.key === " ") {
+    e.preventDefault();
+    if (charging && gameState === "playing") {
+      fireShot();
+      charging = false;
+    }
+  }
+});
+
+// Fire shot function
+function fireShot() {
+  const now = Date.now();
+  const holdTime = (now - chargeStart) / 1000;
+  
+  if (holdTime < chargeThreshold && now - lastShot > 200) {
+    bullets.push({ x: player.x + 18, y: player.y, w: 4, h: 10, damage: 1, pierce: 0, charged: false, color: "white" });
+    lastShot = now;
+  } else if (holdTime >= chargeThreshold && chargeCooldown <= 0) {
+    let damage = 1, pierce = 0, w = 4, h = 10, color = "#00FFFF";
+    if (holdTime >= 3.0) { damage = 10; pierce = 20; w = 14; h = 35; color = "#FF0000"; }
+    else if (holdTime >= 2.5) { damage = 7; pierce = 16; w = 12; h = 30; color = "#FF8800"; }
+    else if (holdTime >= 2.0) { damage = 5; pierce = 12; w = 10; h = 25; color = "#FFFF00"; }
+    else if (holdTime >= 1.5) { damage = 3; pierce = 8; w = 8; h = 20; color = "#00FF00"; }
+    else if (holdTime >= 1.0) { damage = 1; pierce = 4; w = 6; h = 15; color = "#00FFFF"; }
+    bullets.push({ x: player.x + 18, y: player.y, w: w, h: h, damage: damage, pierce: pierce, pierceCount: 0, charged: true, color: color });
+    chargeCooldown = maxChargeCooldown;
+    lastShot = now;
+  }
+}
+
+// Functions
+function spawnEnemy() {
+  let x = Math.random() * 440;
+  enemies.push({ x: x, y: -20, w: 30, h: 20, alive: true, speed: 2 + Math.random() * 2, fireTimer: 0, fireInterval: 40 + Math.floor(Math.random() * 100) });
+}
+
+function spawnBoss() {
+  boss = { x: 170, y: -100, w: 140, h: 70, dir: 2, timer: 0, phase: 1, animTimer: 0, targetY: 60 };
+  bossHP = 50;
+  bossLaser = null;
+  enemies = [];
+  addFloatingText(240, 300, "WARNING!!", "red", 40);
+  screenShake = 20;
+}
+
+function addExplosion(x, y, sizeMod = 1) { explosions.push({ x, y, r: 2, max: 30 * sizeMod }); }
+function addFloatingText(x, y, text, color = "lime", size = 20) {
+  floatingTexts.push({ x, y, text, color, size, life: 60, maxLife: 60 });
+}
+function addHealEffect(x, y) {
+  for (let i = 0; i < 20; i++) {
+    let angle = (Math.PI * 2 / 20) * i;
+    healParticles.push({
+      x: x, y: y,
+      vx: Math.cos(angle) * 4, vy: Math.sin(angle) * 4,
+      life: 40, color: "#00FF00", size: 4
+    });
+  }
+  addFloatingText(x, y - 20, "RECOVER +20!", "#00FF00", 30);
+}
+function collision(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+
+function startGame() {
+  gameState = "countdown";
+  countdownValue = 3;
+  countdownFrame = 0;
+  startBtn.style.display = 'none';
+
+  enemies = []; bullets = []; enemyBullets = []; miniBosses = [];
+  hearts = []; stars = []; explosions = []; floatingTexts = [];
+  player.x = 220; player.y = 600; life = 10; score = 0;
+  gameOver = false; gameClear = false;
+
+  boss = null;
+  stageTimer = 0;
+}
+startBtn.addEventListener('click', startGame);
+
+function loop() {
+  try {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const scale = c.width / 480;
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.clearRect(0, 0, 480, 640);
+
+    let shakeX = 0, shakeY = 0;
+    if (screenShake > 0) {
+      shakeX = (Math.random() - 0.5) * screenShake;
+      shakeY = (Math.random() - 0.5) * screenShake;
+      screenShake *= 0.9;
+      if (screenShake < 0.5) screenShake = 0;
+    }
+    ctx.translate(shakeX, shakeY);
+
+    const now = Date.now();
+
+    // TITLE
+    if (gameState === "title") {
+      ctx.fillStyle = "black"; ctx.fillRect(0, 0, 480, 640);
+      ctx.fillStyle = "white"; ctx.font = "48px sans-serif"; ctx.textAlign = "center";
+      ctx.fillText("INVADER HELL", 240, 120);
+      ctx.font = "bold 24px sans-serif"; ctx.fillStyle = "cyan";
+      ctx.fillText("COMPLETE EDITION", 240, 180);
+
+      ctx.font = "18px sans-serif"; ctx.fillStyle = "#aaa";
+      if (isMobile) {
+        ctx.fillText("Touch LEFT half: Move Left", 240, 380);
+        ctx.fillText("Touch RIGHT half: Move Right", 240, 410);
+        ctx.fillText("Center FIRE button: Shot", 240, 440);
+        ctx.fillText("(Hold FIRE to charge)", 240, 470);
+      } else {
+        ctx.fillText("← → : Move", 240, 380);
+        ctx.fillText("SPACE : Shot / Charge", 240, 410);
+        ctx.fillText("(Hold SPACE to charge)", 240, 440);
+      }
+      startBtn.style.display = 'block';
+      startBtn.innerText = "GAME START";
+      requestAnimationFrame(loop); return;
+    }
+
+    // COUNTDOWN
+    if (gameState === "countdown") {
+      ctx.fillStyle = "black"; ctx.fillRect(0, 0, 480, 640);
+      ctx.fillStyle = "lime"; ctx.fillRect(player.x, player.y, player.w, player.h);
+      countdownFrame++;
+      ctx.fillStyle = "yellow"; ctx.font = "120px sans-serif"; ctx.textAlign = "center";
+      if (countdownValue > 0) ctx.fillText(countdownValue.toString(), 240, 370);
+      else { ctx.fillStyle = "lime"; ctx.font = "80px sans-serif"; ctx.fillText("START!", 240, 350); }
+      if (countdownFrame >= 60) { countdownFrame = 0; countdownValue--; if (countdownValue < 0) gameState = "playing"; }
+      requestAnimationFrame(loop); return;
+    }
+
+    // PLAYING
+    if (!gameOver && !gameClear) {
+      // Player
+      if (player.left) { player.x -= player.speed; player.tilt = Math.max(player.tilt - 0.2, -1.2); }
+      else if (player.right) { player.x += player.speed; player.tilt = Math.min(player.tilt + 0.2, 1.2); }
+      else player.tilt *= 0.8;
+      player.x = Math.max(0, Math.min(440, player.x));
+
+      // Bullets
+      bullets.forEach(b => { b.y -= 8; });
+      enemyBullets.forEach(b => {
+        if (!b.laser) { b.y += b.speed; if (b.dx) b.x += b.dx; if (b.dy) b.y += b.dy; }
+      });
+
+      // STAGE PROGRESSION
+      if (!boss) {
+        stageTimer++;
+
+        if (stageTimer < BOSS_SPAWN_TIME - 120) {
+          let spawnRate = 40;
+          if (stageTimer > 600) spawnRate = 25;
+          if (stageTimer % spawnRate === 0) spawnEnemy();
+        }
+
+        if (stageTimer > BOSS_SPAWN_TIME - 120 && stageTimer < BOSS_SPAWN_TIME) {
+          if (stageTimer % 60 === 0) screenShake = 5;
+        }
+
+        if (stageTimer === BOSS_SPAWN_TIME) {
+          spawnBoss();
+        }
+      }
+
+      // Enemies Update
+      enemies.forEach(e => {
+        if (e.alive) {
+          e.y += e.speed; e.fireTimer++;
+          if (e.fireTimer >= e.fireInterval) {
+            e.fireTimer = 0; e.fireInterval = 60 + Math.floor(Math.random() * 140);
+            enemyBullets.push({ x: e.x + e.w / 2, y: e.y + e.h / 2, w: 6, h: 10, speed: 2.5, dx: (Math.random() - 0.5) * 0.8 });
+          }
+        }
+      });
+
+      // MiniBoss Update
+      miniBosses.forEach(mb => {
+        if (!mb.alive) return;
+        mb.timer++; mb.x += mb.dir;
+        if (mb.x < 0 || mb.x > 420) mb.dir *= -1;
+        if (mb.timer % 40 === 0) {
+          let dx = (player.x + player.w / 2) - (mb.x + mb.w / 2), dy = (player.y + player.h / 2) - (mb.y + mb.h / 2), dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          enemyBullets.push({ x: mb.x + mb.w / 2, y: mb.y + mb.h / 2, w: 6, h: 10, speed: 3, dx: (dx / dist) * 3, dy: (dy / dist) * 3 });
+        }
+      });
+
+      // BOSS LOGIC
+      if (boss) {
+        if (boss.y < boss.targetY && boss.phase === 1) {
+          boss.y += 2;
+        } else {
+          if (boss.phase === 1.5) {
+            boss.animTimer++;
+            if (boss.animTimer % 4 === 0) boss.x += (Math.random() - 0.5) * 20;
+            if (boss.animTimer % 10 === 0) addExplosion(boss.x + Math.random() * boss.w, boss.y + Math.random() * boss.h);
+
+            if (boss.animTimer > 150) {
+              boss.phase = 2;
+              bossHP = 40;
+              boss.w = 140; boss.h = 70; boss.x = 240 - 70; boss.dir = 3; boss.timer = 0;
+              for (let i = 0; i < 3; i++) miniBosses.push({ x: 40 + i * 160, y: 80, w: 40, h: 30, hp: 6, maxHP: 6, alive: true, dir: (i % 2 === 0 ? 2 : -2), timer: 0 });
+              screenShake = 20; addExplosion(boss.x + boss.w / 2, boss.y + boss.h / 2, 5);
+              life = Math.min(life + 20, MAX_LIFE); addHealEffect(player.x + player.w / 2, player.y + player.h / 2);
+            }
+          }
+          else if (boss.phase === 2.5) {
+            boss.animTimer++;
+            screenShake = 10;
+            if (boss.animTimer % 3 === 0) { boss.x += (Math.random() - 0.5) * 30; boss.y += (Math.random() - 0.5) * 10; }
+            if (boss.animTimer % 5 === 0) addExplosion(boss.x + Math.random() * boss.w, boss.y + Math.random() * boss.h, 2);
+
+            if (boss.animTimer > 180) {
+              boss.phase = 3;
+              bossHP = 30;
+              boss.w = 80; boss.h = 80; boss.x = 240 - 40; boss.y = 80; boss.timer = 0;
+              screenShake = 30; addExplosion(boss.x + boss.w / 2, boss.y + boss.h / 2, 10);
+              addFloatingText(240, 200, "FINAL FORM", "red", 50);
+              enemyBullets = [];
+            }
+          }
+          else if (boss.phase === 3) {
+            boss.timer++;
+            boss.x = 200 + Math.sin(boss.timer * 0.05) * 150;
+            boss.y = 80 + Math.sin(boss.timer * 0.1) * 30;
+
+            if (boss.timer > 240) {
+              if (boss.timer % 4 === 0) {
+                let angle = boss.timer * 0.2;
+                for (let k = 0; k < 2; k++) {
+                  let a = angle + (Math.PI * k);
+                  enemyBullets.push({ x: boss.x + boss.w / 2, y: boss.y + boss.h / 2, w: 8, h: 8, speed: 3, dx: Math.cos(a) * 3, dy: Math.sin(a) * 3 });
+                }
+              }
+              if (boss.timer % 60 === 0) {
+                let dx = (player.x + player.w / 2) - (boss.x + boss.w / 2), dy = (player.y + player.h / 2) - (boss.y + boss.h / 2);
+                let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                for (let i = -1; i <= 1; i++) {
+                  enemyBullets.push({ x: boss.x + boss.w / 2, y: boss.y + boss.h / 2, w: 10, h: 10, speed: 5, dx: (dx / dist) * 5 + i * 0.5, dy: (dy / dist) * 5 });
+                }
+              }
+              if (boss.timer % 150 === 0) {
+                for (let i = 0; i < 8; i++) {
+                  let a = Math.random() * Math.PI * 2, s = 2 + Math.random() * 3;
+                  enemyBullets.push({ x: boss.x + boss.w / 2, y: boss.y + boss.h / 2, w: 6, h: 6, speed: s, dx: Math.cos(a) * s, dy: Math.sin(a) * s });
+                }
+              }
+            }
+          }
+          else if (boss.phase === 4) {
+            boss.animTimer++; screenShake = 5;
+            boss.x += (Math.random() - 0.5) * 10; boss.y += (Math.random() - 0.5) * 10;
+            if (boss.animTimer % 5 === 0) addExplosion(boss.x + Math.random() * boss.w, boss.y + Math.random() * boss.h, 2);
+            if (boss.animTimer > 180) { score += 5000; boss = null; gameClear = true; screenShake = 0; }
+          }
+          else {
+            boss.timer++; boss.x += boss.dir;
+            if (boss.x < 10 || boss.x > 480 - boss.w - 10) boss.dir *= -1;
+
+            if (boss.phase === 1) {
+              if (boss.timer % 90 === 0) for (let i = -2; i <= 2; i++) enemyBullets.push({ x: boss.x + boss.w / 2, y: boss.y + boss.h / 2, w: 6, h: 14, speed: 1.7, dx: i * 0.6 });
+              if (boss.timer % 7 === 0) { let angle = boss.timer * 0.15; enemyBullets.push({ x: boss.x + boss.w / 2, y: boss.y + boss.h / 2, w: 6, h: 6, speed: 1.8, dx: Math.cos(angle) * 1.8, dy: Math.sin(angle) * 1.8 }); }
+              if (boss.timer % 500 === 0) bossLaser = { x: boss.x + boss.w / 2, y: boss.y + boss.h / 2, time: 0 };
+            }
+            else if (boss.phase === 2) {
+              if (boss.timer % 50 === 0) for (let i = -3; i <= 3; i++) enemyBullets.push({ x: boss.x + boss.w / 2, y: boss.y + boss.h / 2, w: 6, h: 10, speed: 2.2, dx: i * 0.8 });
+              if (boss.timer % 6 === 0) { let angle = boss.timer * 0.25; enemyBullets.push({ x: boss.x + boss.w / 2, y: boss.y + boss.h / 2, w: 6, h: 6, speed: 2.4, dx: Math.cos(angle) * 2.4, dy: Math.sin(angle) * 2.4 }); }
+              if (boss.timer % 300 === 0) bossLaser = { x: boss.x + boss.w / 2, y: boss.y + boss.h / 2, time: 0 };
+            }
+
+            if (bossLaser) {
+              bossLaser.time++;
+              if (bossLaser.time < 60) { ctx.globalAlpha = 0.35; ctx.strokeStyle = "red"; ctx.beginPath(); ctx.moveTo(bossLaser.x, bossLaser.y); ctx.lineTo(bossLaser.x, 640); ctx.stroke(); ctx.globalAlpha = 1; }
+              if (bossLaser.time === 60) enemyBullets.push({ x: bossLaser.x - 6, y: 0, w: 12, h: 640, speed: 0, laser: true });
+              if (bossLaser.time > 120) bossLaser = null;
+            }
+          }
+        }
+      }
+
+      // Collisions
+      enemies.forEach(e => bullets.forEach(b => {
+        if (e.alive && collision(b, e)) {
+          e.alive = false;
+          if (!b.charged || b.pierceCount >= b.pierce) b.dead = true; else b.pierceCount++;
+          score += 10; addExplosion(e.x + 15, e.y + 10);
+          if (Math.random() < HEART_PROB) hearts.push({ x: e.x, y: e.y, w: 16, h: 16, speed: 1.6, alive: true });
+          if (Math.random() < STAR_PROB) stars.push({ x: e.x, y: e.y, w: 20, h: 20, speed: 2.2, alive: true });
+        }
+      }));
+
+      miniBosses.forEach(mb => {
+        if (!mb.alive) return;
+        bullets.forEach(b => {
+          let alreadyHit = (b.hitTargets && b.hitTargets.indexOf(mb) !== -1);
+          if (collision(b, mb) && !alreadyHit) {
+            if (!b.hitTargets) b.hitTargets = []; b.hitTargets.push(mb);
+            if (!b.charged || b.pierceCount >= b.pierce) b.dead = true; else b.pierceCount++;
+            mb.hp -= (b.damage || 1); addExplosion(mb.x + 30, mb.y + 20);
+            if (mb.hp <= 0) { mb.alive = false; score += 50; addExplosion(mb.x + 15, mb.y + 10); }
+          }
+        });
+      });
+
+      if (boss && boss.phase !== 1.5 && boss.phase !== 2.5 && boss.phase !== 4) bullets.forEach(b => {
+        if (collision(b, boss) && !b.hitBoss) {
+          b.hitBoss = true;
+          if (!b.charged || b.pierceCount >= b.pierce) b.dead = true; else b.pierceCount++;
+          bossHP -= (b.damage || 1);
+          addExplosion(b.x, b.y, 0.5);
+          if (Math.random() < 0.05) hearts.push({ x: boss.x + boss.w / 2, y: boss.y + boss.h / 2, w: 16, h: 16, speed: 1.6, alive: true });
+
+          if (bossHP <= 0) {
+            if (boss.phase === 1) { boss.phase = 1.5; boss.animTimer = 0; enemyBullets = []; }
+            else if (boss.phase === 2) { boss.phase = 2.5; boss.animTimer = 0; enemyBullets = []; }
+            else if (boss.phase === 3) { boss.phase = 4; boss.animTimer = 0; enemyBullets = []; }
+          }
+        }
+      });
+
+      hearts.forEach(h => {
+        let dx = (player.x + player.w / 2) - h.x, dy = (player.y + player.h / 2) - h.y, dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        h.x += (dx / dist) * h.speed; h.y += (dy / dist) * h.speed;
+        if (h.alive && collision(h, player)) { life = Math.min(life + 2, MAX_LIFE); h.alive = false; addExplosion(h.x + 8, h.y + 8); addFloatingText(player.x + 10, player.y, "+2", "hotpink", 16); }
+      });
+      stars.forEach(s => {
+        let dx = (player.x + player.w / 2) - s.x, dy = (player.y + player.h / 2) - s.y, dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        s.x += (dx / dist) * s.speed; s.y += (dy / dist) * s.speed;
+        if (s.alive && collision(s, player)) { s.alive = false; autoFire.active = true; autoFire.endTime = Date.now() + 4000; autoFire.lastShot = 0; addExplosion(s.x + 10, s.y + 10); addFloatingText(player.x + 10, player.y, "AUTO FIRE!", "cyan", 16); }
+      });
+
+      // Player Damage
+      let hit = false;
+      enemyBullets.forEach(b => { if (collision(b, player)) { b.dead = true; hit = true; } });
+      enemies.forEach(e => { if (e.alive && collision(e, player)) { e.alive = false; hit = true; addExplosion(e.x + 15, e.y + 10); } });
+      miniBosses.forEach(mb => { if (mb.alive && collision(mb, player)) { hit = true; addExplosion(mb.x + 30, mb.y + 20); } });
+      if (boss && boss.phase !== 1.5 && boss.phase !== 2.5 && boss.phase !== 4 && collision(boss, player)) { hit = true; }
+
+      if (hit) { life--; screenShake = 10; addExplosion(player.x + 20, player.y + 10); if (life <= 0) gameOver = true; }
+
+      // Cleanup
+      if (autoFire.active) {
+        if (now - (autoFire.lastShot || 0) >= autoFire.interval) { bullets.push({ x: player.x + 18, y: player.y, w: 4, h: 10, damage: 1, pierce: 0, charged: false, color: "#FFFFAA" }); autoFire.lastShot = now; }
+        if (now >= autoFire.endTime) autoFire.active = false;
+      }
+
+      floatingTexts.forEach(ft => { ft.y -= 1.5; ft.life--; });
+      floatingTexts = floatingTexts.filter(ft => ft.life > 0);
+      healParticles.forEach(p => { p.x += p.vx; p.y += p.vy; p.life--; });
+      healParticles = healParticles.filter(p => p.life > 0);
+      bullets = bullets.filter(b => !b.dead && b.y > -60 && b.x > -200 && b.x < 700);
+      enemyBullets = enemyBullets.filter(b => !b.dead && b.y < 800 && b.x > -200 && b.x < 700);
+      enemies = enemies.filter(e => e.alive || e.y < 660);
+      miniBosses = miniBosses.filter(mb => mb.alive);
+      hearts = hearts.filter(h => h.alive && h.x > -200 && h.x < 700 && h.y < 1200);
+      stars = stars.filter(s => s.alive && s.x > -200 && s.x < 700 && s.y < 1200);
+    }
+
+    // DRAWING
+    ctx.fillStyle = "black"; ctx.fillRect(0, 0, 480, 640);
+
+    // Player
+    let playerColor = "lime";
+    if (autoFire.active) playerColor = 'hsl(' + ((Date.now() / 10) % 360) + ', 100%, 50%)';
+    ctx.save(); ctx.translate(player.x + player.w / 2, player.y + player.h / 2); ctx.rotate(player.tilt * 0.3);
+    ctx.fillStyle = playerColor; ctx.fillRect(-player.w / 2, -player.h / 2, player.w, player.h); ctx.restore();
+
+    // Objects
+    bullets.forEach(b => { ctx.fillStyle = b.color || "white"; ctx.fillRect(b.x, b.y, b.w, b.h); });
+    ctx.fillStyle = "yellow"; enemyBullets.forEach(b => { if (b.laser) { ctx.fillStyle = "red"; ctx.fillRect(b.x, b.y, b.w, b.h); ctx.fillStyle = "yellow"; } else ctx.fillRect(b.x, b.y, b.w, b.h); });
+    ctx.fillStyle = "red"; enemies.forEach(e => { if (e.alive) ctx.fillRect(e.x, e.y, e.w, e.h); });
+    miniBosses.forEach(mb => { if (mb.alive) { ctx.fillStyle = "mediumpurple"; ctx.fillRect(mb.x, mb.y, mb.w, mb.h); ctx.fillStyle = "white"; ctx.font = "12px sans-serif"; ctx.fillText("HP:" + mb.hp, mb.x + 8, mb.y - 5); } });
+
+    // Boss Draw
+    if (boss) {
+      if (boss.phase === 1) {
+        ctx.fillStyle = "purple"; ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+        ctx.fillStyle = "white"; ctx.font = "18px sans-serif"; ctx.fillText("BOSS HP: " + bossHP, 10, 70);
+      }
+      else if (boss.phase === 1.5) {
+        let flash = Math.floor(Date.now() / 50) % 2 === 0;
+        ctx.fillStyle = flash ? "white" : "purple"; ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+        ctx.fillStyle = "red"; ctx.font = "bold 30px sans-serif"; ctx.textAlign = "center"; ctx.fillText("WARNING!!", 240, 300);
+      }
+      else if (boss.phase === 2) {
+        ctx.fillStyle = "darkmagenta"; ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+        ctx.fillStyle = "cyan"; ctx.font = "18px sans-serif"; ctx.fillText("PHASE 2 HP: " + bossHP, 10, 70);
+        ctx.strokeStyle = "yellow"; ctx.lineWidth = 2; ctx.strokeRect(boss.x - 2, boss.y - 2, boss.w + 4, boss.h + 4);
+      }
+      else if (boss.phase === 2.5) {
+        let flash = Math.floor(Date.now() / 30) % 2 === 0;
+        ctx.fillStyle = flash ? "red" : "black"; ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+        ctx.fillStyle = "red"; ctx.font = "bold 40px sans-serif"; ctx.textAlign = "center"; ctx.fillText("FINAL FORM", 240, 300);
+      }
+      else if (boss.phase === 3) {
+        ctx.fillStyle = "black"; ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+        ctx.strokeStyle = "red"; ctx.lineWidth = 3; ctx.strokeRect(boss.x, boss.y, boss.w, boss.h);
+        ctx.fillStyle = "red"; ctx.beginPath();
+        ctx.arc(boss.x + boss.w / 2, boss.y + boss.h / 2, 10 + Math.sin(boss.timer * 0.2) * 5, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "red"; ctx.font = "18px sans-serif"; ctx.fillText("BOSS FINAL: " + bossHP, 10, 70);
+      }
+      else if (boss.phase === 4) {
+        let flash = Math.floor(Date.now() / 30) % 2 === 0;
+        ctx.fillStyle = flash ? "white" : "red"; ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+      }
+    }
+
+    // Warnings / Stage Info
+    if (!boss && !gameOver) {
+      if (stageTimer > BOSS_SPAWN_TIME - 120 && Math.floor(Date.now() / 100) % 2 === 0) {
+        ctx.fillStyle = "red"; ctx.font = "bold 40px sans-serif"; ctx.textAlign = "center";
+        ctx.fillText("WARNING", 240, 300);
+      }
+    }
+
+    hearts.forEach(h => { ctx.font = "20px sans-serif"; ctx.fillStyle = "hotpink"; ctx.fillText("❤", h.x, h.y + 14); });
+    stars.forEach(s => { ctx.font = "22px sans-serif"; ctx.fillStyle = "gold"; ctx.fillText("★", s.x, s.y + 16); });
+
+    healParticles.forEach(p => { ctx.globalAlpha = p.life / 40; ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, p.size, p.size); ctx.globalAlpha = 1.0; });
+    explosions.forEach(ex => { ctx.beginPath(); ctx.fillStyle = "orange"; ctx.arc(ex.x, ex.y, ex.r, 0, Math.PI * 2); ctx.fill(); ex.r += 1; });
+    explosions = explosions.filter(ex => ex.r < ex.max);
+
+    floatingTexts.forEach(ft => {
+      ctx.save(); ctx.globalAlpha = ft.life / ft.maxLife; ctx.fillStyle = ft.color;
+      ctx.font = "bold " + ft.size + "px sans-serif"; ctx.shadowColor = "black"; ctx.shadowBlur = 4;
+      ctx.textAlign = "center"; ctx.fillText(ft.text, ft.x, ft.y); ctx.restore();
+    });
+
+    // HUD
+    ctx.fillStyle = "white"; ctx.font = "16px sans-serif"; ctx.textAlign = "left";
+    ctx.fillText("SCORE: " + score, 10, 20);
+    ctx.fillText("LIFE: " + life, 10, 40);
+    if (!boss && stageTimer < BOSS_SPAWN_TIME) {
+      let pct = Math.floor((stageTimer / BOSS_SPAWN_TIME) * 100);
+      ctx.fillStyle = "#444"; ctx.fillRect(100, 20, 280, 10);
+      ctx.fillStyle = "lime"; ctx.fillRect(100, 20, 280 * (stageTimer / BOSS_SPAWN_TIME), 10);
+      ctx.fillStyle = "white"; ctx.font = "12px sans-serif"; ctx.fillText("BOSS APPROACHING: " + pct + "%", 240, 15);
+    }
+    if (autoFire.active) { let rem = Math.max(0, Math.ceil((autoFire.endTime - now) / 1000)); ctx.fillStyle = "cyan"; ctx.textAlign = "right"; ctx.fillText("AUTO " + rem + "s", 470, 20); }
+
+    // Charge UI
+    if (charging) {
+      let currentTime = (Date.now() - chargeStart) / 1000;
+      let barX = 140, barY = 620, barW = 200, barH = 15;
+      ctx.fillStyle = "rgba(30,30,30,0.9)"; ctx.fillRect(barX, barY, barW, barH);
+      const segments = [{ s: 0, e: 1, c: "#6666FF" }, { s: 1, e: 1.5, c: "#00FFFF" }, { s: 1.5, e: 2, c: "#00FF00" }, { s: 2, e: 2.5, c: "#FFFF00" }, { s: 2.5, e: 3, c: "#FF8800" }];
+      segments.forEach(seg => { if (currentTime > seg.s) { let d = Math.min(currentTime, seg.e) - seg.s; ctx.fillStyle = seg.c; ctx.fillRect(barX + (seg.s / 3.0) * barW, barY, (d / 3.0) * barW, barH); } });
+      let txt = "CHARGING", border = "white";
+      if (currentTime >= 3) { txt = "MAX"; if (Math.floor(Date.now() / 50) % 2 === 0) { ctx.fillStyle = "rgba(255,0,0,0.5)"; ctx.fillRect(barX, barY, barW, barH); } border = "#FF0000"; }
+      else if (currentTime >= 2.5) txt = "LV4"; else if (currentTime >= 2.0) txt = "LV3"; else if (currentTime >= 1.5) txt = "LV2"; else if (currentTime >= 1.0) txt = "LV1";
+      ctx.strokeStyle = border; ctx.lineWidth = 2; ctx.strokeRect(barX, barY, barW, barH);
+      ctx.fillStyle = "white"; ctx.font = "bold 12px sans-serif"; ctx.textAlign = "left"; ctx.fillText(txt, 350, 632);
+    }
+    if (chargeCooldown > 0) {
+      chargeCooldown -= 16.67; ctx.fillStyle = "rgba(255,0,0,0.3)"; ctx.fillRect(140, 605, 200, 10);
+      ctx.fillStyle = "red"; ctx.fillRect(140, 605, 200 * (chargeCooldown / maxChargeCooldown), 10);
+      ctx.strokeStyle = "white"; ctx.lineWidth = 1; ctx.strokeRect(140, 605, 200, 10);
+      ctx.fillStyle = "white"; ctx.font = "10px sans-serif"; ctx.textAlign = "left"; ctx.fillText("COOLDOWN", 350, 613);
+    }
+
+    if (gameOver || gameClear) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      const scale = c.width / 480;
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      ctx.fillStyle = "rgba(0,0,0,0.7)"; ctx.fillRect(0, 0, 480, 640);
+      ctx.fillStyle = "white"; ctx.font = "40px sans-serif"; ctx.textAlign = "center";
+      if (gameOver) ctx.fillText("GAME OVER", 240, 300);
+      if (gameClear) ctx.fillText("GAME CLEAR", 240, 300);
+      ctx.font = "24px sans-serif"; ctx.fillText("FINAL SCORE: " + score, 240, 350);
+      startBtn.innerText = "RETRY"; startBtn.style.display = "block";
+    }
+
+  } catch (err) { console.error(err); }
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
